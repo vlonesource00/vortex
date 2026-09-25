@@ -100,6 +100,11 @@ export class VehicleEnvelope {
       // diagnostic: measured over a stint this is what separates a tyre that
       // can still carry the cornering demand from one that has gone away.
       gripHealth: this.planGrip,
+      // Full-throttle driven-axle torque in N.m at this speed. This is the
+      // plant's own `drive` term at throttle 1 (engineAccel is force/mass, so
+      // force * radius is the axle torque), which is what the tyre rollout
+      // needs to predict slip rather than infer it after the fact.
+      driveTorque: model.engineAccel(v) * model.mass * model.spec.radius,
       lateral: lateralCapacity,
       brake,
       drive,
