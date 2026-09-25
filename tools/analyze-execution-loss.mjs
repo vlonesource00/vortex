@@ -150,6 +150,9 @@ const categoryOf = (r, dtLoss) => {
 };
 
 const buckets = { line: 0, braking: 0, grip: 0, actuation: 0, scrub: 0, plan: 0 };
+// §4: PLAN is too broad to act on. Split it by whether the profile is even
+// physically realisable before blaming the controller for missing it.
+const planSplit = { PLAN_MODEL: 0, EXECUTION: 0, INHERITED_DEFICIT: 0 };
 const sectorBuckets = new Array(sectorCount).fill(0).map(() => ({ loss: 0, growth: 0, n: 0, ...Object.fromEntries(Object.keys(buckets).map((k) => [k, 0])) }));
 let totalGrowth = 0;
 let totalPlanTime = 0;
@@ -171,6 +174,15 @@ for (let i = 1; i < samples.length; i++) {
   totalGrowth += growth;
   const dtLoss = Math.max(0, dtDriven - dtPlan);
   const category = categoryOf(b, dtLoss);
+  if (category === 'plan') {
+    // Acceleration the profile itself is demanding over this interval.
+    const aPlan = (b.target * b.target - a.target * a.target) / (2 * Math.max(0.5, ds));
+    const aAvailable = b.envDrive + Math.max(0, -b.envBrake) * (aPlan < 0 ? 1 : 0);
+    const aActual = b.ax;
+    if (aPlan > aAvailable + 0.35) planSplit.PLAN_MODEL += dtLoss;
+    else if (aActual < aAvailable - 1.0) planSplit.EXECUTION += dtLoss;
+    else planSplit.INHERITED_DEFICIT += dtLoss;
+  }
   const sector = sectorBuckets[Math.floor(wrap(b.s, trackLength) / sectorLength)];
   sector.n++;
   sector.growth += growth;
@@ -234,10 +246,27 @@ const report = {
   lossByCategory: Object.fromEntries(
     Object.entries(buckets).map(([key, value]) => [
       key,
-      { seconds: Number(value.toFixed(3)), share: Number((value / Math.max(1e-6, lossTotalPositive)).toFixed(3)) },
+      {
+        seconds: Number(value.toFixed(3)),
+        perLap: Number((value / Math.max(1, valid.length)).toFixed(3)),
+        share: Number((value / Math.max(1e-6, lossTotalPositive)).toFixed(3)),
+      },
     ]),
   ),
   bucketedLossTotal: Number(lossTotalPositive.toFixed(3)),
+  // §4 mandatory split: how much of PLAN is an unreachable profile rather than
+  // a controller that fails to execute a feasible one. MPC can only recover the
+  // EXECUTION share; PLAN_MODEL belongs to the profile/oracle.
+  planSplit: Object.fromEntries(
+    Object.entries(planSplit).map(([key, value]) => [
+      key,
+      {
+        seconds: Number(value.toFixed(3)),
+        perLap: Number((value / Math.max(1, valid.length)).toFixed(3)),
+        shareOfPlan: Number((value / Math.max(1e-6, buckets.plan)).toFixed(3)),
+      },
+    ]),
+  ),
   worstSectors: worstSectors.slice(0, 8),
   sectors: worstSectors,
 };

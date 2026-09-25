@@ -39,4 +39,16 @@ export class TrajectoryOptimizer {
     this.solves++; this.lastCost = best;
     return { steerCorrection: this.steerCorrection, accelerationBias: this.accelerationBias, cost: best, horizon: h * horizon };
   }
+  /** Compute-cost telemetry for the solver budget report (§28). */
+  stats() {
+    return {
+      mode: 'trim-3x3',
+      solves: this.solves,
+      fallbacks: this.fallbacks,
+      evaluationsPerSolve: 9,
+      nodes: 8,
+      horizonSeconds: 1.2,
+    };
+  }
+  reset() { this.steerCorrection = 0; this.accelerationBias = 0; }
 }

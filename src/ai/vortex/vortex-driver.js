@@ -342,7 +342,8 @@ export class VortexDriver {
       telemetry: this.telemetry.snapshot(), limiter: this.limiter,
       atlas: { usingOracle: this.atlas.usingOracle, lapTime: this.atlas.oracle?.lapTime ?? null,
         qMax: this.atlas.qMax ?? null },
-      envelope: this.envelope.state, candidates: this.planner.candidates.length };
+          envelope: this.envelope.state, optimizer: this.optimizer.stats(),
+          candidates: this.planner.candidates.length };
   }
 }
 
