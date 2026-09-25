@@ -65,7 +65,12 @@ export class AttackContract {
    */
   update(best, ego, graph, candidates = []) {
     const target = best?.targetId ?? null;
-    const flankOf = (c) => Math.sign((c.targetLateral ?? 0) - ego.lateral || 1);
+    // The generator already assigns an explicit flank to every rival-attack
+    // candidate. Deriving it from sign(targetLateral - ego.lateral) is wrong:
+    // the sign flips as the ego moves along the corridor, so a committed LEFT
+    // attack can report RIGHT while still driving the left line. That is
+    // exactly the contract/plan mismatch this block must close.
+    const flankOf = (c) => c?.flank || Math.sign((c?.targetLateral ?? 0) - ego.lateral || 1);
 
     if (!target) {
       if (this.active && ++this.active.clear > 4) { this.active = null; this.state = 'SEARCH'; }
@@ -78,10 +83,16 @@ export class AttackContract {
       (edge.a === ego.id && edge.b === target) || (edge.b === ego.id && edge.a === target));
     const overlapping = currentEdge?.overlap === true;
 
-    // Per-flank best cost this solve. This is the only honest basis for a
-    // flank comparison -- the contract never sees an "advantage", only costs.
+    // Per-flank best cost this solve. Only candidates that actually describe
+    // THIS rival's attack geometry may participate. Generic corridors (Q0, Qn)
+    // have targetLateral === null, and `targetLateral ?? 0` used to classify
+    // them as a left/right flank purely from the sign of (0 - ego.lateral).
+    // That let a generic corridor silently decide a rival attack comparison.
+    // LOCK and E candidates both carry targetId === the rival id, so this
+    // filter includes exactly the attack family.
     const bestByFlank = new Map();
     for (const c of candidates) {
+      if (c.targetId !== target) continue;
       const f = flankOf(c);
       const prev = bestByFlank.get(f);
       if (!prev || c.score < prev.score) bestByFlank.set(f, c);
@@ -101,6 +112,10 @@ export class AttackContract {
         exitValue: best.exitSpeed,
         clear: 0,
         committed: false,
+        // §17 The committed attack's PHYSICAL corridor. LOCK must inherit
+        // these, not jump to a hardcoded atlas shift.
+        targetShift: best.targetShift ?? 0,
+        targetLateral: best.targetLateral ?? ego.lateral,
       };
       this.streak = 1;
       this.streakFlank = bestFlank;
@@ -155,6 +170,13 @@ export class AttackContract {
       this.active.exitValue = best.exitSpeed;
       this.active.clear = 0;
     }
+
+    // §17 Keep the committed physical corridor in sync with the winning
+    // candidate on the committed flank, so LOCK inherits the actual attack
+    // geometry rather than a hardcoded atlas shift.
+    const ref = bestByFlank.get(this.active.flank) ?? best;
+    this.active.targetShift = ref.targetShift ?? this.active.targetShift ?? 0;
+    this.active.targetLateral = ref.targetLateral ?? this.active.targetLateral ?? ego.lateral;
 
     this.active.probability = Math.max(0, Math.min(1, 0.55 + (best.exitSpeed - ego.speed) * 0.025));
     return this.active;

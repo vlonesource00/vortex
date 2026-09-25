@@ -87,21 +87,24 @@ export const SAFETY_LONGITUDINAL_MARGIN = 1.10;
  * Physical meaning, for the audit trail:
  *
  *   BODY_CONTACT_CLEARANCE      -- bodies touch. Physical.
+ *   SAFETY_MARGIN               -- last-resort intervention, deliberately tight.
  *   LOW_ENERGY_RACE_CLEARANCE   -- legal wheel-to-wheel. Tactical, not physical.
  *   INTERACTION_MARGIN          -- below this the plan may be speed-restricted.
  *   ATTACK_CORRIDOR_MARGIN      -- a flank is only a flank beyond this.
  *   OWNERSHIP_MARGIN            -- who is entitled to the corridor.
  *   BRAKE_EVENT_MARGIN          -- telemetry attribution, not a physical limit.
  *   ENGAGEMENT_MARGIN           -- planning relevance, deliberately generous.
- *   SAFETY_MARGIN               -- last-resort intervention, deliberately tight.
  *
- * The ordering that must hold for the architecture to be self-consistent:
+ * Correct numerical ordering (the previous comment claimed
+ * SAFETY <= BODY_CONTACT, which is false: 0.15 > 0.00):
  *
- *   SAFETY <= BODY_CONTACT <= LOW_ENERGY_RACE < INTERACTION < ATTACK_CORRIDOR
- *                                                          <= OWNERSHIP
+ *   BODY_CONTACT (0.00) < SAFETY (0.15) < LOW_ENERGY_RACE (0.30)
+ *     < INTERACTION (0.55) < ATTACK_CORRIDOR (0.72) < OWNERSHIP (0.85)
  *
- * and BRAKE_EVENT / ENGAGEMENT sit between INTERACTION and OWNERSHIP because
- * they are reporting and planning horizons, not physical limits.
+ * SAFETY sits ABOVE body contact because a last-resort intervention must fire
+ * before the bodies actually touch, not after. BRAKE_EVENT (0.50) and
+ * ENGAGEMENT (0.65) sit between INTERACTION and OWNERSHIP because they are
+ * reporting and planning horizons, not physical limits.
  */
 export const CLEARANCE = Object.freeze({
   BODY_CONTACT_CLEARANCE,
@@ -173,4 +176,25 @@ export function restrictsSpeed(state) {
   return state === 'FOLLOW_BLOCKED'
     || state === 'CONVERGING_CONFLICT'
     || state === 'CROSSING_CONFLICT';
+}
+
+/**
+ * Physical lateral velocity of a candidate at a path point.
+ *
+ * Candidate points are SPATIALLY separated by the corridor step (10 m), not by
+ * one planner tick. Estimating v_q as `dq * PLAN_HZ` therefore invents lateral
+ * speeds up to 54 m/s for a routine 2 m transition over 10 m. The correct
+ * relation is
+ *
+ *     v_q = (dq / ds) * v
+ *
+ * i.e. the local path slope times the predicted speed. Both TrajectoryRefiner
+ * and OpportunityField MUST use this helper so they cannot drift apart.
+ *
+ * @param {number} offsetDelta  q(n) - q(n-1) in metres
+ * @param {number} dsStep       distance between the two points in metres
+ * @param {number} speed        predicted vehicle speed in m/s
+ */
+export function candidateLateralVelocity(offsetDelta, dsStep, speed) {
+  return (offsetDelta / Math.max(0.1, dsStep)) * speed;
 }

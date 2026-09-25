@@ -129,7 +129,7 @@ while (t < seconds) {
       t: Number(t.toFixed(2)),
       s: Number(car.s.toFixed(1)),
       gapToRival: Number(wrap(rival.s - car.s + track.length / 2, track.length) - track.length / 2).toFixed(1),
-      contractState: egoDriver.planner?.attack?.state ?? null, contractFlank: egoDriver.planner?.attack?.active?.flank ?? null, contractSwitches: egoDriver.planner?.attack?.switchLog?.length ?? 0, backward: egoDriver.plan?.backwardPropagation ?? egoDriver.planner?.candidates?.[0]?.backwardPropagation ?? null, origins: egoDriver.plan?.interactionOrigins ?? egoDriver.planner?.candidates?.[0]?.interactionOrigins ?? null, ranked: ranked.map((c) => ({
+      contractState: egoDriver.planner?.attack?.state ?? null, contractFlank: egoDriver.planner?.attack?.active?.flank ?? null, planFlank: egoDriver.plan?.flank ?? 0, planId: egoDriver.plan?.id ?? null, mismatch: (egoDriver.planner?.attack?.active?.committed && (egoDriver.plan?.targetId === egoDriver.planner?.attack?.active?.opponentId) && (egoDriver.plan?.flank) && (egoDriver.plan?.flank !== egoDriver.planner?.attack?.active?.flank)) ? 1 : 0, contractSwitches: egoDriver.planner?.attack?.switchLog?.length ?? 0, backward: egoDriver.plan?.backwardPropagation ?? egoDriver.planner?.candidates?.[0]?.backwardPropagation ?? null, origins: egoDriver.plan?.interactionOrigins ?? egoDriver.planner?.candidates?.[0]?.interactionOrigins ?? null, ranked: ranked.map((c) => ({
         id: c.id,
         score: Number(c.score.toFixed(3)),
         targetShift: Number((c.targetShift ?? 0).toFixed(2)),

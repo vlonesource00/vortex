@@ -32,10 +32,20 @@ export class CorridorGenerator {
     }
     if (contract) {
       const rival = opponents.find(item => item.id === contract.opponentId);
-      if (rival) profiles.unshift({ id: `LOCK${rival.id}`,
-        targetShift: clamp(contract.flank * 2.35, -3.7, 3.7),
-        focus: rival.id, focusStation: 22, targetLateral: rival.lateral + contract.flank * 2.5,
+    if (rival) {
+      // §17 LOCK must inherit the committed attack's PHYSICAL corridor, not
+      // jump to a generic atlas shift. Previously LOCK used targetShift
+      // = flank * 2.35 and targetLateral = rival.lateral + flank * 2.5, which
+      // did not describe the same corridor as the E candidate it was supposed
+      // to hold (measured: LOCK at shift -2.35 while E1L was at -0.17). That
+      // discontinuity is a source of within-flank plan instability.
+      const lockLateral = contract.targetLateral ?? (rival.lateral + contract.flank * (ego.spec.halfWidth + rival.spec.halfWidth + ATTACK_CORRIDOR_MARGIN));
+      const lockShift = contract.targetShift ?? clamp(lockLateral - base, -3.8, 3.8);
+      profiles.unshift({ id: `LOCK${rival.id}`,
+        targetShift: clamp(lockShift, -3.7, 3.7),
+        focus: rival.id, focusStation: 22, targetLateral: lockLateral,
         flank: contract.flank, committed: true });
+    }
     }
     const candidates = [];
     for (const profile of profiles) {

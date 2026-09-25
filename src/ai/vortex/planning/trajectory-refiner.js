@@ -1,5 +1,5 @@
 import { clamp, wrap } from '../../../sim/math.js';
-import { classifyConflict, restrictsSpeed, INTERACTION_MARGIN } from '../interaction/clearance.js';
+import { classifyConflict, restrictsSpeed, candidateLateralVelocity, INTERACTION_MARGIN } from '../interaction/clearance.js';
 
 // How aggressively a demanded lateral move is charged against the grip budget.
 // Tuned against the s=1200-1350 departure: the plan was promising a ~4 m
@@ -88,14 +88,18 @@ export class TrajectoryRefiner {
           - (ego.spec.halfWidth + predicted.halfWidth);
         const alongGap = Math.abs(ds) - (ego.spec.halfLength + predicted.halfLength);
         // Closing rates: true relative speed along track, and the lateral gap
-        // SHRINKING RATE. The latter must not use the candidate's raw lateral
-        // velocity: a corridor that swings away from the rival is escaping, not
-        // crossing. Measuring raw motion classified an escaping flank as
-        // CROSSING_CONFLICT and cut the target speed by 34 m/s at the ego's own
-        // station for a rival 18 m ahead. See tools/fixture-combat.mjs.
+        // SHRINKING RATE.
+        //
+        // Candidate lateral velocity must be PHYSICAL. Candidate points are
+        // spatially separated by the corridor step (10 m), not by one planner
+        // tick, so extrapolating with a raw offset delta treated a 2 m
+        // transition over 10 m as 54 m/s of lateral speed. Use v_q = (dq/ds)*v
+        // and advance the candidate by v_q * dt.
         const relSpeedLong = Math.abs(ego.speed - predicted.speed);
+        const dsStep = prior ? Math.max(0.1, p.distance - prior.distance) : 0.1;
+        const vLatEgo = prior ? candidateLateralVelocity(p.offset - prior.offset, dsStep, ego.speed) : 0;
         const gapNow = Math.abs(predicted.lateral - p.offset);
-        const pOffsetAhead = prior ? p.offset + (p.offset - prior.offset) : p.offset;
+        const pOffsetAhead = p.offset + vLatEgo * dt;
         const gapFuture = Math.abs(future.lateral - pOffsetAhead);
         const relSpeedLat = Math.max(0, (gapNow - gapFuture) / dt);
 

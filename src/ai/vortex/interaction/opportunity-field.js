@@ -1,6 +1,6 @@
 import { clamp, wrap } from '../../../sim/math.js';
 import {
-  PROXIMITY_LAT_DECAY, PROXIMITY_LONG_DECAY,
+  PROXIMITY_LAT_DECAY, PROXIMITY_LONG_DECAY, candidateLateralVelocity,
 } from './clearance.js';
 
 /**
@@ -31,7 +31,14 @@ export class OpportunityField {
         const ds = Math.max(.1, p.distance - prior.distance);
         distance += ds;
         time += ds / Math.max(5, (p.speed + prior.speed) * .5);
-        if ((p.freeSpeedLimit ?? p.speed) > p.speed + 0.25) trafficLimited++;
+        // Traffic restriction is a difference between PLAN LIMITS, never
+        // between a limit and the forward-reachable speed. `p.speed` lags
+        // `speedLimit` whenever the car is still accelerating, so the old form
+        // counted ordinary acceleration lag as traffic limitation. That fed
+        // AttackContract.isCredible() and silently blocked commitment.
+        const freeLimit = p.freeSpeedLimit ?? p.speedLimit ?? p.speed;
+        const planLimit = p.speedLimit ?? p.speed;
+        if (freeLimit > planLimit + 0.25) trafficLimited++;
       }
       p.time = time;
       exitSpeed = p.speed;
@@ -71,10 +78,24 @@ export class OpportunityField {
         // Relative energy and crossing angle. §15: a parallel car at small dv
         // and positive clearance must NOT cost the same as a trajectory crossing
         // through its door.
+        //
+        // Candidate lateral velocity in PHYSICAL units. Candidate points are
+        // spatially separated by the corridor step (10 m), not by one planner
+        // tick, so the old `(p.offset - prior.offset) * 27` invented a lateral
+        // speed up to 54 m/s for a routine 2 m transition over 10 m. Use
+        // v_q = (dq/ds) * v instead.
+        //
+        // `crossing` must be driven by the LATERAL closing rate alone. Dividing
+        // by total relative speed diluted a hard cut-in to near zero whenever
+        // the longitudinal closing rate was large -- which is precisely when
+        // swinging across a car you are lapping is most dangerous.
         const relLong = Math.abs(ego.speed - predicted.speed);
-        const relLat = Math.abs((future.lateral - predicted.lateral) * 27 - (prior ? (p.offset - prior.offset) * 27 : 0));
+        const dsStep = prior ? Math.max(0.1, p.distance - prior.distance) : 0.1;
+        const vLatEgo = prior ? candidateLateralVelocity(p.offset - prior.offset, dsStep, ego.speed) : 0;
+        const vLatRival = (future.lateral - predicted.lateral) * 27;
+        const relLat = Math.abs(vLatRival - vLatEgo);
         const relSpeed = Math.hypot(relLong, relLat);
-        const crossing = relSpeed > 0.5 ? relLat / relSpeed : 0;
+        const crossing = clamp(relLat / 8, 0, 1);
 
         // Track-edge pinch. Pinching a rival against the barrier is worse than
         // the same clearance in open space.

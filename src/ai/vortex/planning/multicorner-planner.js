@@ -1,4 +1,4 @@
-import { AttackContract } from '../interaction/attack-contract.js';
+import { AttackContract, FLANK_SWITCH_HYSTERESIS } from '../interaction/attack-contract.js';
 import { BrakeEvents } from './brake-events.js';
 import { CorridorGenerator } from './corridor-generator.js';
 import { OpportunityField } from '../interaction/opportunity-field.js';
@@ -28,6 +28,33 @@ export class MulticornerPlanner {
       const retained = candidates.find(item => item.targetId === this.attack.active.opponentId && item.score <= best.score + 1.8);
       this.plan = retained ?? best;
     } else this.plan = best;
+
+    // §14 Contract/plan closure. AttackContract is updated AFTER selection, so
+    // without this the contract could report COMMITTED LEFT while the solve
+    // executed a right-hand or generic geometry. Once committed, the planner
+    // may choose any geometry on the committed flank, but may not execute the
+    // opposite flank unless the alternative beats it by the ΔJ hysteresis or
+    // the committed corridor has become invalid.
+    if (this.attack.active?.committed) {
+      const committedFlank = this.attack.active.flank;
+      const target = this.attack.active.opponentId;
+      const flankOf = (c) => c?.flank || Math.sign((c?.targetLateral ?? 0) - ego.lateral || 1);
+      const family = candidates.filter(c => c.targetId === target);
+      const byFlank = (f) => family.filter(c => flankOf(c) === f).sort((a, b) => a.score - b.score)[0];
+      const mine = byFlank(committedFlank);
+      const theirs = byFlank(-committedFlank);
+      const dJ = (mine && theirs) ? (theirs.score - mine.score) : 0;
+      const maySwitch = theirs && mine && dJ < -FLANK_SWITCH_HYSTERESIS;
+      // Only a RIVAL ATTACK candidate can violate the commitment. A generic
+      // corridor has targetLateral === null and its flank sign is meaningless
+      // (it is derived from (0 - ego.lateral)), so forcing it onto the attack
+      // flank would be the same contamination this block removed from the
+      // contract. Mismatch is defined as an attack trajectory crossing to the
+      // opposite rival flank.
+      const planIsAttack = this.plan?.targetId === target;
+      if (!maySwitch && mine && planIsAttack && flankOf(this.plan) === -committedFlank) this.plan = mine;
+    }
+
     this.attack.update(this.plan, ego, graph, candidates);
     this.brakeEvents.update(this.plan, ego.s, this.track.length, observation, occupancy);
     this.candidates = candidates; this.solveCount++;
