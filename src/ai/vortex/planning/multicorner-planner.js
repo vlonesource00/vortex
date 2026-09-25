@@ -28,7 +28,7 @@ export class MulticornerPlanner {
       const retained = candidates.find(item => item.targetId === this.attack.active.opponentId && item.score <= best.score + 1.8);
       this.plan = retained ?? best;
     } else this.plan = best;
-    this.attack.update(this.plan, ego, graph);
+    this.attack.update(this.plan, ego, graph, candidates);
     this.brakeEvents.update(this.plan, ego.s, this.track.length, observation, occupancy);
     this.candidates = candidates; this.solveCount++;
     this.lastSolveMs = Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - start);

@@ -129,7 +129,7 @@ while (t < seconds) {
       t: Number(t.toFixed(2)),
       s: Number(car.s.toFixed(1)),
       gapToRival: Number(wrap(rival.s - car.s + track.length / 2, track.length) - track.length / 2).toFixed(1),
-      ranked: ranked.map((c) => ({
+      contractState: egoDriver.planner?.attack?.state ?? null, contractFlank: egoDriver.planner?.attack?.active?.flank ?? null, contractSwitches: egoDriver.planner?.attack?.switchLog?.length ?? 0, backward: egoDriver.plan?.backwardPropagation ?? egoDriver.planner?.candidates?.[0]?.backwardPropagation ?? null, origins: egoDriver.plan?.interactionOrigins ?? egoDriver.planner?.candidates?.[0]?.interactionOrigins ?? null, ranked: ranked.map((c) => ({
         id: c.id,
         score: Number(c.score.toFixed(3)),
         targetShift: Number((c.targetShift ?? 0).toFixed(2)),

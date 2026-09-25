@@ -1,4 +1,5 @@
 import { clamp, wrap } from '../../../sim/math.js';
+import { classifyConflict, restrictsSpeed, INTERACTION_MARGIN } from '../interaction/clearance.js';
 
 // How aggressively a demanded lateral move is charged against the grip budget.
 // Tuned against the s=1200-1350 departure: the plan was promising a ~4 m
@@ -66,35 +67,90 @@ export class TrajectoryRefiner {
       p.demand = 0;
     }
 
-    // Interaction limits only where station, time and lane all intersect. These
-    // are the only reason the plan may fall below the free-air profile.
+    // Interaction limits only where station, time and lane genuinely intersect
+    // in SWEPT BODY GEOMETRY, and only when the conflict state actually
+    // warrants a speed restriction. Previously this was a binary lateral-gap
+    // test that treated any side-by-side as traffic, which forced the generated
+    // attack corridor to inherit the rival's speed. See interaction/clearance.js.
     let interaction = false;
+    const interactionOrigins = [];
     for (let i = 0; i < n; i++) {
       const p = points[i];
+      const prior = points[i - 1];
       const horizon = (points[i].distance ?? 0) / Math.max(8, ego.speed);
+      const dt = 1 / 27;
       for (const rival of rivals) {
         const predicted = occupancy.at(rival, horizon);
+        const future = occupancy.at(rival, horizon + dt);
         const ds = wrap(predicted.s - p.s + this.track.length / 2, this.track.length) - this.track.length / 2;
-        const lateralGap = Math.abs(predicted.lateral - p.offset);
-        if (ds > -1 && ds < ego.spec.halfLength + predicted.halfLength + 8
-          && lateralGap < ego.spec.halfWidth + predicted.halfWidth + 0.44) {
-          // Match the rival's pace, do not trail below it. The old cap forced
-          // the car to predicted.speed - 1.28 when alongside, which is exactly
-          // the reported "slows down a ton for the car in front": being level
-          // with a slower car is not a reason to also be slower than it.
-          const capped = Math.max(0, predicted.speed + Math.max(0, (ds - 4) * 0.32));
-          p.speedLimit = Math.min(p.speedLimit, capped);
-          interaction = true;
-        }
+        // Signed body clearances. >0 means the bodies are separated.
+        const latGap = Math.abs(predicted.lateral - p.offset)
+          - (ego.spec.halfWidth + predicted.halfWidth);
+        const alongGap = Math.abs(ds) - (ego.spec.halfLength + predicted.halfLength);
+        // Closing rates: true relative speed along track, and the lateral gap
+        // SHRINKING RATE. The latter must not use the candidate's raw lateral
+        // velocity: a corridor that swings away from the rival is escaping, not
+        // crossing. Measuring raw motion classified an escaping flank as
+        // CROSSING_CONFLICT and cut the target speed by 34 m/s at the ego's own
+        // station for a rival 18 m ahead. See tools/fixture-combat.mjs.
+        const relSpeedLong = Math.abs(ego.speed - predicted.speed);
+        const gapNow = Math.abs(predicted.lateral - p.offset);
+        const pOffsetAhead = prior ? p.offset + (p.offset - prior.offset) : p.offset;
+        const gapFuture = Math.abs(future.lateral - pOffsetAhead);
+        const relSpeedLat = Math.max(0, (gapNow - gapFuture) / dt);
+
+        const state = classifyConflict(latGap, alongGap, relSpeedLong, relSpeedLat, ds > -1);
+        if (!restrictsSpeed(state)) continue;
+
+        // Only restrict where the candidate and rival actually occupy
+        // overlapping LONGITUDINAL body space -- the station where they would
+        // meet. Everything upstream of that is the backward sweep's job, and it
+        // is the physically correct way to arrive at that speed.
+        //
+        // Previously the cap was applied at every point out to the full horizon
+        // with a shallow (ds-4)*0.32 ramp. Measured consequence: a rival 21 m
+        // ahead cut the target speed at the ego's own station from 55.12 to
+        // 26.68 m/s before the car had done anything wrong. That is the
+        // reported "braking before the actual fight".
+        if (alongGap > 0) continue;
+
+        // Match the rival's pace, do not trail below it.
+        const capped = Math.max(0, predicted.speed);
+        if (capped >= p.speedLimit) continue;
+        if (!interaction) interactionOrigins.push({
+          point: i,
+          s: Number(p.s.toFixed(2)),
+          distanceAhead: Number((p.distance ?? 0).toFixed(2)),
+          timeAhead: Number(horizon.toFixed(2)),
+          rivalId: rival.id ?? 'R',
+          rivalS: Number(predicted.s.toFixed(2)),
+          rivalQ: Number(predicted.lateral.toFixed(2)),
+          candidateS: Number(p.s.toFixed(2)),
+          candidateQ: Number(p.offset.toFixed(2)),
+          longitudinalBodyGap: Number(alongGap.toFixed(2)),
+          lateralBodyGap: Number(latGap.toFixed(2)),
+          classification: state,
+          freeSpeedLimit: Number((p.freeSpeedLimit ?? p.speedLimit).toFixed(2)),
+          speedLimitBefore: Number(p.speedLimit.toFixed(2)),
+          speedLimitAfter: Number(capped.toFixed(2)),
+        });
+        p.speedLimit = Math.min(p.speedLimit, capped);
+        interaction = true;
       }
     }
+    path.interactionOrigins = interactionOrigins;
 
     // The free-air profile is already braking-feasible, so the backward sweep
     // only runs when an interaction limit has to be propagated back up the
     // braking zone. Braking authority here is the full straight-line capacity:
     // the car finishes braking before the corner, and using the corner's
     // reduced friction reserve would force apex speed hundreds of metres early.
+    // §8 Backward propagation instrumentation. A future traffic cap must not
+    // silently reach 150 m back toward the current station and present itself
+    // as braking now. Snapshot before, compare after, report the reach.
+    let backwardPropagation = null;
     if (interaction) {
+      const before = points.map(p => p.speedLimit);
       for (let pass = 0; pass < this.brakeSteps; pass++) {
         for (let i = n - 2; i >= 0; i--) {
           const a = points[i], b = points[i + 1];
@@ -103,7 +159,31 @@ export class TrajectoryRefiner {
           a.speedLimit = Math.min(a.speedLimit, Math.sqrt(b.speedLimit * b.speedLimit + 2 * env.brake * ds));
         }
       }
+      let earliest = -1, latest = -1, maxDrop = 0;
+      for (let i = 0; i < n; i++) {
+        const drop = before[i] - points[i].speedLimit;
+        if (drop > 0.05) {
+          if (earliest < 0) earliest = i;
+          latest = i;
+          maxDrop = Math.max(maxDrop, drop);
+        }
+      }
+      const origin = interactionOrigins[0];
+      backwardPropagation = {
+        triggered: true,
+        originStation: origin?.s ?? null,
+        originCappedSpeed: origin?.speedLimitAfter ?? null,
+        earliestModifiedStation: earliest >= 0 ? Number(points[earliest].s.toFixed(2)) : null,
+        distancePropagatedBackward: earliest >= 0 && origin
+          ? Number((origin.s - points[earliest].s).toFixed(2)) : 0,
+        targetSpeedBeforeAtEgo: Number((before[0] ?? 0).toFixed(2)),
+        targetSpeedAfterAtEgo: Number((points[0].speedLimit ?? 0).toFixed(2)),
+        totalDeltaVAtEgo: Number(((before[0] ?? 0) - (points[0].speedLimit ?? 0)).toFixed(2)),
+        maxLocalDrop: Number(maxDrop.toFixed(2)),
+        modifiedPoints: earliest >= 0 ? (latest - earliest + 1) : 0,
+      };
     }
+    path.backwardPropagation = backwardPropagation;
 
     // Forward sweep: reachable speed and elapsed time, for scoring only.
     for (let i = 0; i < n; i++) {

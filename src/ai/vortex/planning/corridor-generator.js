@@ -1,4 +1,5 @@
 import { clamp, wrap } from '../../../sim/math.js';
+import { ATTACK_CORRIDOR_MARGIN } from '../interaction/clearance.js';
 
 const smooth = t => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
 
@@ -19,7 +20,11 @@ export class CorridorGenerator {
       for (const flank of [-1, 1]) {
         const station = wrap(rival.s + Math.max(-2, Math.min(9, rival.longitudinalSpeed * .16)), this.track.length);
         const base = atlas.lineOffset(station);
-        const lateral = rival.lateral + flank * (ego.spec.halfWidth + rival.spec.halfWidth + .42);
+        // The flank must sit OUTSIDE the interaction boundary, or the attack
+        // corridor is traffic-capped by construction. Previously this was +0.42
+        // against an interaction threshold of +0.44: the dedicated passing route
+        // was 2 cm inside the traffic-conflict boundary. See interaction/clearance.js.
+        const lateral = rival.lateral + flank * (ego.spec.halfWidth + rival.spec.halfWidth + ATTACK_CORRIDOR_MARGIN);
         const targetShift = clamp(lateral - base, -3.8, 3.8);
         profiles.push({ id: `E${rival.id}${flank < 0 ? 'L' : 'R'}`, targetShift, focus: rival.id,
           focusStation: Math.max(12, ds), targetLateral: lateral, flank });

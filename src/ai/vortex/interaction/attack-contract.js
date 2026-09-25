@@ -1,20 +1,162 @@
+/**
+ * Attack commitment semantics around the continuous planner.
+ *
+ * This is NOT a personality state machine. It is a thin layer that decides
+ * whether the current attack flank is credible enough to be held against
+ * frame-to-frame scoring noise. The planner keeps producing candidates every
+ * solve; this class decides which flank is allowed to win.
+ *
+ * The previous implementation committed a flank flip whenever
+ *
+ *     (best.score > 1.8 || edge.overlap === false)
+ *
+ * where `best.score` is the ABSOLUTE cost of the newly winning candidate.
+ * Costs run in the hundreds, so that condition was true on essentially every
+ * solve where a different flank won, no matter how small the actual advantage.
+ * That is the reported "left/right attack changing inside fractions of a second
+ * on the same corner". See tools/audit-clearance.mjs and the block report.
+ *
+ * The correct quantity is the DIFFERENCE between the two flanks:
+ *
+ *     dJ = J(alternative) - J(committed)
+ *
+ * in the same score units the planner already uses (1 unit = 1/13 s of race
+ * time, because OpportunityField's trajectory term is `time * 13`).
+ */
+import { restrictsSpeed, INTERACTION_MARGIN } from './clearance.js';
+
+/** Solved needed on one flank before commitment is granted (~185 ms at 27 Hz). */
+export const COMMITMENT_PERSISTENCE = 5;
+
+/**
+ * Score advantage an alternative flank must show to break an existing
+ * commitment. Lower scores are better, so the alternative must be this much
+ * CHEAPER. 3.0 units is about 0.23 s of race time -- enough to be real, small
+ * enough that a genuinely superior route is not held off.
+ */
+export const FLANK_SWITCH_HYSTERESIS = 3.0;
+
+/**
+ * A candidate is only commit-credible if it is not being traffic-capped into a
+ * crawl and retains some exit value. Without this, commitment freezes a bad
+ * corridor -- the exact failure the earlier hysteresis experiment produced.
+ */
+export function isCredible(candidate, ego) {
+  if (!candidate) return false;
+  const exit = candidate.exitSpeed ?? 0;
+  const capped = (candidate.trafficLimitedFraction ?? 0) > 0.85;
+  return !capped && exit >= ego.speed * 0.45;
+}
+
 export class AttackContract {
-  constructor() { this.active = null; }
-  update(best, ego, graph) {
+  constructor() {
+    this.active = null;
+    this.state = 'SEARCH';
+    this.streak = 0;
+    this.streakFlank = 0;
+    this.switchLog = [];
+  }
+
+  /**
+   * @param {object} best       currently selected plan
+   * @param {object} ego
+   * @param {Array}  graph      engagement edges
+   * @param {Array}  candidates all scored candidates this solve
+   */
+  update(best, ego, graph, candidates = []) {
     const target = best?.targetId ?? null;
-    if (!target) { if (!this.active || this.active.clear++ > 4) this.active = null; return this.active; }
-    const currentEdge = graph.find(edge => edge.a === ego.id && edge.b === target || edge.b === ego.id && edge.a === target);
-    if (!this.active || this.active.opponentId !== target) this.active = {
-      opponentId: target, flank: Math.sign((best.targetLateral ?? 0) - ego.lateral || 1),
-      launchS: ego.s, completionS: best.points.at(-1)?.s ?? ego.s, returnS: (best.points.at(-1)?.s ?? ego.s) + 12,
-      probability: .5, exitValue: best.exitSpeed, clear: 0,
-    };
-    else {
-      const advantage = (this.active.flank === Math.sign((best.targetLateral ?? 0) - ego.lateral || 1)) ? 0 : best.score;
-      if (advantage > 1.8 || currentEdge?.overlap === false) this.active.flank = Math.sign((best.targetLateral ?? 0) - ego.lateral || 1);
-      this.active.exitValue = best.exitSpeed; this.active.clear = 0;
+    const flankOf = (c) => Math.sign((c.targetLateral ?? 0) - ego.lateral || 1);
+
+    if (!target) {
+      if (this.active && ++this.active.clear > 4) { this.active = null; this.state = 'SEARCH'; }
+      else if (this.active) this.state = 'CLEARING';
+      this.streak = 0;
+      return this.active;
     }
-    this.active.probability = Math.max(0, Math.min(1, .55 + (best.exitSpeed - ego.speed) * .025));
+
+    const currentEdge = graph.find(edge =>
+      (edge.a === ego.id && edge.b === target) || (edge.b === ego.id && edge.a === target));
+    const overlapping = currentEdge?.overlap === true;
+
+    // Per-flank best cost this solve. This is the only honest basis for a
+    // flank comparison -- the contract never sees an "advantage", only costs.
+    const bestByFlank = new Map();
+    for (const c of candidates) {
+      const f = flankOf(c);
+      const prev = bestByFlank.get(f);
+      if (!prev || c.score < prev.score) bestByFlank.set(f, c);
+    }
+
+    const bestFlank = flankOf(best);
+
+    if (!this.active || this.active.opponentId !== target) {
+      // First credible sight of a target. Do not commit yet.
+      this.active = {
+        opponentId: target,
+        flank: bestFlank,
+        launchS: ego.s,
+        completionS: best.points.at(-1)?.s ?? ego.s,
+        returnS: (best.points.at(-1)?.s ?? ego.s) + 12,
+        probability: 0.5,
+        exitValue: best.exitSpeed,
+        clear: 0,
+        committed: false,
+      };
+      this.streak = 1;
+      this.streakFlank = bestFlank;
+      this.state = 'SETUP';
+    } else {
+      const committedFlank = this.active.flank;
+      const sameFlank = bestFlank === committedFlank;
+
+      // §23 Persistence as evidence, not force. Count consecutive solves the
+      // same flank wins before granting commitment.
+      if (sameFlank) {
+        this.streak = this.streakFlank === bestFlank ? this.streak + 1 : 1;
+        this.streakFlank = bestFlank;
+      } else {
+        this.streak = 1;
+        this.streakFlank = bestFlank;
+      }
+
+      if (!this.active.committed) {
+        // SEARCH -> SETUP -> COMMITTED. Only a persistence-confirmed, credible
+        // flank may be committed.
+        this.state = 'SETUP';
+        if (this.streak >= COMMITMENT_PERSISTENCE && isCredible(best, ego)) {
+          this.active.committed = true;
+          this.active.flank = bestFlank;
+          this.state = overlapping ? 'OVERLAP' : 'COMMITTED';
+        }
+      } else {
+        // §20 Hysteresis on the DIFFERENCE between flanks, never on an
+        // absolute score.
+        const alt = bestByFlank.get(-committedFlank);
+        const mine = bestByFlank.get(committedFlank);
+        const dJ = (alt && mine) ? (alt.score - mine.score) : (sameFlank ? 0 : best.score);
+        const corridorInvalid = !isCredible(mine ?? best, ego);
+
+        if (!sameFlank && (dJ < -FLANK_SWITCH_HYSTERESIS || corridorInvalid)) {
+          this.switchLog.push({
+            t: globalThis.performance?.now?.() ?? Date.now(),
+            from: committedFlank,
+            to: bestFlank,
+            dJ: Number(dJ.toFixed(2)),
+            reason: corridorInvalid ? 'corridor_invalid' : 'alternative_dominates',
+          });
+          this.active.flank = bestFlank;
+          this.active.committed = isCredible(best, ego);
+          this.streak = 1;
+          this.streakFlank = bestFlank;
+        }
+        this.state = overlapping ? 'OVERLAP' : 'COMMITTED';
+      }
+
+      this.active.exitValue = best.exitSpeed;
+      this.active.clear = 0;
+    }
+
+    this.active.probability = Math.max(0, Math.min(1, 0.55 + (best.exitSpeed - ego.speed) * 0.025));
     return this.active;
   }
 }

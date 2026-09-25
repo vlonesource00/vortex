@@ -1,4 +1,7 @@
 import { clamp, wrap } from '../../../sim/math.js';
+import {
+  PROXIMITY_LAT_DECAY, PROXIMITY_LONG_DECAY,
+} from './clearance.js';
 
 /**
  * Shared progress, retained-pass, exit-energy, contact and legality value.
@@ -42,17 +45,54 @@ export class OpportunityField {
 
       for (const rival of opponents) {
         const predicted = occupancy.at(rival, time);
+        const future = occupancy.at(rival, time + 1 / 27);
         let ds = wrap(predicted.s - p.s + this.track.length / 2, this.track.length) - this.track.length / 2;
-        const along = Math.max(0, Math.abs(ds) - (ego.spec.halfLength + predicted.halfLength + .65));
-        const lateral = Math.max(0, Math.abs(predicted.lateral - p.offset) - (ego.spec.halfWidth + predicted.halfWidth + .34));
-        const clearance = Math.hypot(along, lateral);
-        minClearance = Math.min(minClearance, clearance);
-        const collision = Math.exp(-((along / 2.6) ** 2 + (lateral / .8) ** 2));
-        const energy = Math.abs((ego.speed - predicted.speed) * Math.sign(ds || 1));
-        const cContact = collision * (175 + Math.min(120, energy * 13));
+
+        // SIGNED body clearances, in metres of free gap between the two bodies.
+        // >0 separated, <0 overlapping. The previous form subtracted a margin
+        // and clamped at zero, which saturated the risk Gaussian below 0.34 m
+        // and charged a legal flank 99% of what a real impact costs.
+        const bodyLat = ego.spec.halfWidth + predicted.halfWidth;
+        const bodyLong = ego.spec.halfLength + predicted.halfLength;
+        const latGap = Math.abs(predicted.lateral - p.offset) - bodyLat;
+        const alongGap = Math.abs(ds) - bodyLong;
+
+        // Proximity in the GAP domain: a car in a separate route costs nothing.
+        const proximity = Math.exp(-Math.max(0, latGap) / PROXIMITY_LAT_DECAY)
+          * Math.exp(-Math.max(0, alongGap) / PROXIMITY_LONG_DECAY);
+
+        // Overlap depth. Zero unless the body rectangles intersect on BOTH axes.
+        // Depth is the shallow axis of penetration: a 0.1 m sliver along the
+        // full car length is a 0.1 m penetration, not a 4.6 m one.
+        const overLat = Math.max(0, -latGap);
+        const overLong = Math.max(0, -alongGap);
+        const overlap = overLat > 0 && overLong > 0 ? Math.min(overLat, overLong) : 0;
+
+        // Relative energy and crossing angle. §15: a parallel car at small dv
+        // and positive clearance must NOT cost the same as a trajectory crossing
+        // through its door.
+        const relLong = Math.abs(ego.speed - predicted.speed);
+        const relLat = Math.abs((future.lateral - predicted.lateral) * 27 - (prior ? (p.offset - prior.offset) * 27 : 0));
+        const relSpeed = Math.hypot(relLong, relLat);
+        const crossing = relSpeed > 0.5 ? relLat / relSpeed : 0;
+
+        // Track-edge pinch. Pinching a rival against the barrier is worse than
+        // the same clearance in open space.
+        const edgeRoom = this.track.halfWidth - Math.abs(p.offset);
+        const edgePinch = edgeRoom < ego.spec.halfWidth + 0.55
+          ? 1 + (ego.spec.halfWidth + 0.55 - edgeRoom) * 1.6 : 1;
+
+        // §16 physics, not a global weight reduction. High-energy collision
+        // remains extremely expensive; parallel close racing is acceptable.
+        const overlapCost = overlap > 0 ? 190 + overlap * 260 : 0;
+        const crossingCost = crossing ** 2 * Math.min(150, relSpeed ** 2 * 0.85);
+        const parallelCost = proximity * (2.5 + relLong * 0.35);
+        const cContact = (overlapCost * edgePinch + proximity * crossingCost * edgePinch + parallelCost);
         contact += cContact;
         cost += cContact;
-        if (collision > .12) interactions++;
+        if (cContact > 40) interactions++;
+        const clearance = Math.hypot(Math.max(0, alongGap), Math.max(0, latGap));
+        minClearance = Math.min(minClearance, clearance);
         const flank = Math.abs(ds) < 12 && Math.abs(p.offset - predicted.lateral) > ego.spec.halfWidth + predicted.halfWidth;
         if (flank && distance > 25) {
           const reward = Math.min(2.5, p.speed * .025);
