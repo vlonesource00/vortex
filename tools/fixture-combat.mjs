@@ -80,6 +80,8 @@ for (const [car, s, lateral, speed] of [[ego, START_S, 0, rivalSpeed + 6], [riva
 const egoDriver = session.drivers[0];
 const samples = [];
 const planSwitches = [];
+const scoreLog = [];
+let lastScoreLog = -1;
 let lastPlanId = null;
 let lastPlanOffset = 0;
 
@@ -117,6 +119,26 @@ while (t < seconds) {
     throttle: Number(car.controls.throttle.toFixed(2)),
     brake: Number(car.controls.brake.toFixed(2)),
   });
+
+  // §17 Score decomposition. Sampled sparsely: we need the ranking and the
+  // reason, not every one of the 27 Hz replans.
+  if (Math.abs(t - lastScoreLog) > 0.75 && egoDriver.planner?.candidates?.length) {
+    lastScoreLog = t;
+    const ranked = [...egoDriver.planner.candidates].sort((a, b) => a.score - b.score).slice(0, 3);
+    scoreLog.push({
+      t: Number(t.toFixed(2)),
+      s: Number(car.s.toFixed(1)),
+      gapToRival: Number(wrap(rival.s - car.s + track.length / 2, track.length) - track.length / 2).toFixed(1),
+      ranked: ranked.map((c) => ({
+        id: c.id,
+        score: Number(c.score.toFixed(3)),
+        targetShift: Number((c.targetShift ?? 0).toFixed(2)),
+        relation: c.terminalRelation ?? null,
+        trafficLimited: c.trafficLimitedFraction ?? null,
+        breakdown: c.breakdown ?? null,
+      })),
+    });
+  }
 }
 
 // --- metrics ----------------------------------------------------------------
@@ -137,6 +159,17 @@ const meanTargetVsProfile = samples.reduce((s, r) => s + (r.profile - r.target),
 const meanSpeed = samples.reduce((s, r) => s + r.v, 0) / Math.max(1, samples.length);
 const actualTime = samples.at(-1).t - samples[0].t;
 
+// §20 Score margin: how decisively the winner wins.
+const margins = scoreLog
+  .filter((e) => e.ranked.length > 1)
+  .map((e) => e.ranked[1].score - e.ranked[0].score);
+const marginStats = {
+  n: margins.length,
+  mean: margins.length ? Number((margins.reduce((a, b) => a + b, 0) / margins.length).toFixed(3)) : 0,
+  p50: margins.length ? Number([...margins].sort((a, b) => a - b)[Math.floor(margins.length * 0.5)].toFixed(3)) : 0,
+  p95: margins.length ? Number([...margins].sort((a, b) => a - b)[Math.floor(margins.length * 0.95)].toFixed(3)) : 0,
+};
+
 const report = {
   config: { gap, rivalSpeed, seconds },
   pursuitSeconds: Number(actualTime.toFixed(2)),
@@ -151,6 +184,8 @@ const report = {
     significantSideFlips: sideFlips,
     switches: planSwitches.slice(0, 25),
     idHistogram: samples.reduce((h, r) => { h[r.planId ?? 'null'] = (h[r.planId ?? 'null'] ?? 0) + 1; return h; }, {}),
+    scoreMargins: marginStats,
+    scoreTimeline: scoreLog,
   },
 
   timeline: samples.filter((_, i) => i % 24 === 0),

@@ -60,6 +60,9 @@ export class TrajectoryRefiner {
       const lateralRate = LATERAL_RATE_COST * Math.abs(dq) / (L * L);
       const reachable = Math.sqrt(Math.max(1, env.lateral / Math.max(1e-5, Math.abs(p.curvature) + lateralRate)));
       p.speedLimit = clamp(Math.min(anchor, geometry, reachable), 5, 82);
+      // Free-air limit before any traffic cap. The scorer needs this to charge
+      // a candidate for the time a rival is actually costing it.
+      p.freeSpeedLimit = p.speedLimit;
       p.demand = 0;
     }
 

@@ -8,7 +8,7 @@ import { TrajectoryRefiner } from './trajectory-refiner.js';
 export class MulticornerPlanner {
   constructor(atlas, track, envelope, ownership) {
     this.atlas = atlas; this.track = track; this.envelope = envelope; this.ownership = ownership;
-    this.generator = new CorridorGenerator(atlas); this.opportunity = new OpportunityField(track);
+    this.generator = new CorridorGenerator(atlas); this.opportunity = new OpportunityField(track, atlas);
     this.game = new ScenarioGame(this.opportunity, ownership); this.refiner = new TrajectoryRefiner(track, envelope, atlas);
     this.attack = new AttackContract(); this.brakeEvents = new BrakeEvents();
     this.plan = null; this.candidates = []; this.lastSolveMs = 0; this.solveCount = 0;
