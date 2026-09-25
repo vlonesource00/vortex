@@ -78,7 +78,12 @@ export class TrackAtlas {
     if (!this.usingOracle) return this.line.at(s).speed;
     const t = wrap(s, this.track.length) / this.oracle.spacing;
     const i = Math.floor(t) % this.oracle.n, j = (i + 1) % this.oracle.n, f = t - Math.floor(t);
-    return this.oracle.v[i] + (this.oracle.v[j] - this.oracle.v[i]) * f;
+    const base = this.oracle.v[i] + (this.oracle.v[j] - this.oracle.v[i]) * f;
+    // The stored profile is a solution at one particular grip level. The live
+    // tyre state modulates the whole envelope, so the plan has to scale with
+    // it: corner speeds go as sqrt(mu). Without this the car keeps targeting a
+    // grip that stopped existing mid-stint and departs once the tyres are gone.
+    return base * Math.sqrt(clamp(this.envelope.muScale, 0.55, 1.45));
   }
 
   /** Driven-path curvature of the optimised line at a station. */

@@ -17,6 +17,8 @@ export class VehicleEnvelope {
     this.muScale = 1;
     this.brakeScale = 1;
     this.driveScale = 1;
+    this.muReference = null;
+    this.planGrip = 1;
     this.samples = 0;
     this.confidence = 0;
     this.lastReason = 'initialising';
@@ -24,11 +26,15 @@ export class VehicleEnvelope {
 
   /** Bounded identification from the car's own measured response. */
   update(ego, dt) {
+    if (process.env.VORTEX_NO_ADAPT) { this.confidence = 1; return this; }
     const wheels = ego.wheels ?? [];
     if (wheels.length === 4) {
       const tyreEstimate = wheels.reduce((sum, wheel) => sum + tyreGrip(wheel.tyre, Math.max(1500, wheel.load || 3300)), 0) / 4;
       const reference = tyreGrip(this.model.tyre, 3300);
       const ratio = clamp(tyreEstimate / Math.max(0.2, reference), 0.72, 1.22);
+      // Anchor the stint at the very first tyre reading so the plan tracks
+      // degradation rather than the small constant bias of the identification.
+      if (this.muReference === null) this.muReference = ratio;
       this.muScale = damp(this.muScale, ratio, 0.35, dt);
     }
 
@@ -62,7 +68,14 @@ export class VehicleEnvelope {
     this.brakeScale = clamp(this.brakeScale, 0.8, 1.1);
     this.driveScale = clamp(this.driveScale, 0.8, 1.1);
     this.confidence = 1 - Math.exp(-this.samples / 10);
-    this.model.setMuScale(this.muScale);
+    // The offline oracle is solved for one grip level; what the runtime needs
+    // is the change in grip since the stint began, because the stored profile
+    // already carries the solved level. The plan modulation is deliberately
+    // slow: a per-frame grip figure would make the speed target chatter and
+    // the longitudinal loop chase noise instead of driving the car.
+    const degraded = this.muReference === null ? 1 : clamp(this.muScale / this.muReference, 0.55, 1.45);
+    this.planGrip = damp(this.planGrip, degraded, 0.25, dt);
+    this.model.setMuScale(this.planGrip);
     return this;
   }
 
@@ -100,6 +113,8 @@ export class VehicleEnvelope {
 
   reset() {
     this.muScale = 1; this.brakeScale = 1; this.driveScale = 1;
+    this.muReference = null;
+    this.planGrip = 1;
     this.samples = 0; this.confidence = 0; this.lastReason = 'initialising';
     this.model.setMuScale(1);
   }

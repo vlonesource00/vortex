@@ -1,5 +1,10 @@
 import { clamp, wrap } from '../../../sim/math.js';
 
+// How aggressively a demanded lateral move is charged against the grip budget.
+// Tuned against the s=1200-1350 departure: the plan was promising a ~4 m
+// excursion through a bend already at 70-80% grip utilisation.
+const LATERAL_RATE_COST = 1.5;
+
 /**
  * Turns a corridor candidate into a physically feasible speed plan.
  *
@@ -39,9 +44,22 @@ export class TrajectoryRefiner {
     for (let i = 0; i < n; i++) {
       const p = points[i];
       const anchor = this.atlas ? this.atlas.profileSpeed(p.s) : Infinity;
-      const geometry = this.envelope.at(ego, speed, p.curvature, p.offset).speedLimit;
-      p.lateralLimit = this.envelope.at(ego, speed, p.curvature, p.offset).lateral;
-      p.speedLimit = clamp(Math.min(anchor, geometry), 5, 82);
+      const env = this.envelope.at(ego, speed, p.curvature, p.offset);
+      const geometry = env.speedLimit;
+      p.lateralLimit = env.lateral;
+      // Reachability. Moving the car sideways costs grip that is then not
+      // available for cornering: over a transition of length L covering dq the
+      // extra demand is of order v^2 * dq / L^2. A plan that ignores this asks
+      // for a multi-metre excursion through a fast bend, the car tracks a few
+      // metres off it, and once the tyres are a few percent down it runs out of
+      // road entirely. The horizon is the distance the car covers in roughly
+      // the servo's own response time.
+      const j = Math.min(n - 1, i + 6);
+      const L = Math.max(10, points[j].distance - p.distance);
+      const dq = points[j].offset - p.offset;
+      const lateralRate = LATERAL_RATE_COST * Math.abs(dq) / (L * L);
+      const reachable = Math.sqrt(Math.max(1, env.lateral / Math.max(1e-5, Math.abs(p.curvature) + lateralRate)));
+      p.speedLimit = clamp(Math.min(anchor, geometry, reachable), 5, 82);
       p.demand = 0;
     }
 

@@ -237,10 +237,16 @@ export class VortexDriver {
   needsRecovery(ego) {
     const edge = this.track.halfWidth;
     const headingError = angle(ego.heading - ego.yaw);
+    // The hysteresis threshold must match the host's own off-track definition
+    // (halfCarInside is |lateral| <= halfWidth). The ported gate held recovery
+    // at edge - 0.7, which sits *inside* the legal racing surface: Astra's
+    // racing line never reaches it, but the oracle line legitimately runs out
+    // to the track edge, so every wide corner looked like a departure and the
+    // car dropped to its 8 m/s rejoin target mid-lap.
     return (Math.abs(ego.lateral) > edge + 0.7 && ego.speed < 16)
       || Math.abs(headingError) > 1.3
       || this.reverseTimer > 0
-      || (this.wasRecovering && (Math.abs(ego.lateral) > edge - 0.7 || Math.abs(headingError) > 0.6));
+      || (this.wasRecovering && (Math.abs(ego.lateral) > edge || Math.abs(headingError) > 0.6));
   }
 
   recover(ego, rivals, dt) {
