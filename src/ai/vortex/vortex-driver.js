@@ -143,6 +143,26 @@ export class VortexDriver {
     this.limiter = { planned: this.planSpeed(ego.s), cap, targetSpeed: limiting, slip, lateral: current.lateral,
       feedforward, required, drive: actuation.drive, braking: actuation.braking,
       lateralDemand: actuation.lateralDemand, lookahead: firstSteer.lookahead,
+      // Full control chain, for the conditional execution-loss diagnosis. The
+      // point is to be able to tell a throttle that is being withheld from a
+      // tyre that has nothing left, which whole-lap averages cannot separate.
+      speedIntegral: this.speedIntegral,
+      accelBias: this.lastSolve?.accelerationBias ?? 0,
+      reserve: actuation.reserve,
+      accel: actuation.acceleration,
+      throttle: actuation.throttle,
+      brakeCmd: actuation.brake,
+      envDrive: env.drive,
+      envBrake: env.brake,
+      envDrag: env.drag,
+      envMu: env.mu,
+      gripUtil: env.utilisation,
+      steer: nominalSteer,
+      yawRate: ego.yawRate,
+      yawError: angle(current.heading - ego.yaw),
+      beta: slip,
+      ax: ego.ax,
+      ay: ego.ay,
       servo: this.servo.terms };
     this.steer = controls.steer; this.targetSpeed = targetSpeed;
     this.strategy.pressure = engaged ? clamp(this.strategy.pressure + dt * .25, 0, 1) : clamp(this.strategy.pressure - dt * .12, 0, 1);
