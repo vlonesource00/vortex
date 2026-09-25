@@ -2,7 +2,8 @@ export class LapResidualLearner {
   constructor(memory, atlas) { this.memory = memory; this.atlas = atlas; this.lapEligible = true; this.lastLap = null; this.telemetry = { acceptedLaps: 0, rejectedLaps: 0, updatedCells: 0 }; }
   update(ego, flags, dt) {
     // Diagnostic hook: isolate the learner when attributing lap-time changes.
-    if (process.env.VORTEX_NO_LEARN) return;
+    // `process` does not exist in the browser bundle, so guard the lookup.
+    if (typeof process !== 'undefined' && process.env?.VORTEX_NO_LEARN) return;
     const lap = ego.race?.lap ?? 0;
     if (this.lastLap !== null && ego.race && lap !== this.lastLap) {
       const result = this.memory.finishLap(Boolean(this.lapEligible && ego.race.valid));

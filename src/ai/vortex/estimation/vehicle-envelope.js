@@ -3,6 +3,12 @@ import { tyreGrip } from '../../../sim/tyre.js';
 import { EnvelopeModel } from '../atlas/envelope.js';
 
 /**
+ * Diagnostic switch, safe in both Node and the browser bundle. `process` does
+ * not exist in the page, and touching it there throws every frame.
+ */
+const flag = (name) => typeof process !== 'undefined' && Boolean(process.env?.[name]);
+
+/**
  * Online vehicle-envelope identification.
  *
  * The physical prior is the validated EnvelopeModel derived from the frozen
@@ -26,7 +32,7 @@ export class VehicleEnvelope {
 
   /** Bounded identification from the car's own measured response. */
   update(ego, dt) {
-    if (process.env.VORTEX_NO_ADAPT) { this.confidence = 1; return this; }
+    if (flag('VORTEX_NO_ADAPT')) { this.confidence = 1; return this; }
     const wheels = ego.wheels ?? [];
     if (wheels.length === 4) {
       const tyreEstimate = wheels.reduce((sum, wheel) => sum + tyreGrip(wheel.tyre, Math.max(1500, wheel.load || 3300)), 0) / 4;
