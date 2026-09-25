@@ -1,0 +1,18 @@
+{
+  "name": "vortex-motorsport",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "test": "node --test tests/*.test.js",
+    "campaign:solo": "node tools/run-vortex-campaign.mjs --field 1 --laps 3",
+    "campaign:race": "node tools/run-vortex-campaign.mjs --field 6 --laps 1",
+    "oracle:measure": "node tools/build-vortex-oracle.mjs",
+    "diagnose:pace": "node tools/analyze-lap-loss.mjs"
+  },
+  "dependencies": { "three": "0.166.1" },
+  "devDependencies": { "vite": "5.4.8" }
+}
