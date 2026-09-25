@@ -27,7 +27,7 @@ export class VehicleServo {
     // The steering actuator and the vehicle's own steering filter together lag
     // the command by roughly 0.14 s, so the curvature the wheels will actually
     // be following is the one that far ahead, not the one under the car.
-    const lag = ego.speed * 0.14;
+    const lag = ego.speed * 0.09;
     const here = path.at(ego.s);
     const ahead = path.at(ego.s + 3 + lag);
     const further = path.at(ego.s + 6 + lag);
