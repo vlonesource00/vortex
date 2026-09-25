@@ -133,6 +133,23 @@ export class CorridorGenerator {
         const s = wrap(ego.s + distance, this.track.length);
         const baseLineQ = atlas.lineOffset(s);
 
+        const isQ0 = profile.id === 'Q0' && !profile.isOwnedCorridor;
+
+        if (isQ0) {
+          const p = atlas.sample(s, 0);
+          points.push({
+            ...p,
+            distance,
+            shift: 0,
+            offset: p.offset,
+            speed: p.speed,
+            speedLimit: p.speed,
+            lateralLimit: this.track.halfWidth - ego.spec.halfWidth - .16,
+            demand: 0
+          });
+          continue;
+        }
+
         let targetQ;
         if (profile.isOwnedCorridor && ownedCorridor.active) {
           const safeBuffer = Math.min(0.55, Math.max(0.1, (ownedCorridor.qMax - ownedCorridor.qMin) * 0.25));

@@ -150,6 +150,8 @@ export class VortexDriver {
       speedIntegral: this.speedIntegral,
       accelBias: this.lastSolve?.accelerationBias ?? 0,
       reserve: actuation.reserve,
+      gripHealth: env.gripHealth,
+      planGrip: this.envelope.planGrip,
       accel: actuation.acceleration,
       throttle: actuation.throttle,
       brakeCmd: actuation.brake,
@@ -203,13 +205,8 @@ export class VortexDriver {
    * hundreds of metres early.
    */
   brakeAuthority(ego, station, speed) {
-    // Braking is completed before the corner, so the authority is the
-    // straight-line capacity. Evaluating it at the target station's own
-    // curvature applies the apex's reduced friction-ellipse grip over the
-    // whole braking distance and makes the car slow down far too early: at the
-    // Dock Hairpin that alone cost 4.7 m/s of mid-corner speed.
     const offset = this.planner.at(station).offset;
-    return this.envelope.at(ego, speed, 0, offset).brake * 0.82;
+    return this.envelope.at(ego, speed, 0, offset).brake;
   }
 
   /**

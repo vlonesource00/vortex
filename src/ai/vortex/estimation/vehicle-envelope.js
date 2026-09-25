@@ -96,6 +96,10 @@ export class VehicleEnvelope {
     const off = Math.abs(lateral) > (ego?.trackHalfWidth ?? 8.2) - 0.9;
     return {
       mu: this.muScale,
+      // Grip remaining relative to the start of the stint. Exposed as a
+      // diagnostic: measured over a stint this is what separates a tyre that
+      // can still carry the cornering demand from one that has gone away.
+      gripHealth: this.planGrip,
       lateral: lateralCapacity,
       brake,
       drive,

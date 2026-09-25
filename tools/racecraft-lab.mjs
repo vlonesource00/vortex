@@ -25,6 +25,10 @@ const PACE_DELTAS = QUICK ? [3, 0, -3] : [8, 5, 3, 1.5, 0, -1.5, -3];
 const GAPS = QUICK ? [15, 40] : [8, 15, 25, 40, 60];
 const BEHAVIOURS = QUICK ? ['hold', 'defend-inside'] : ['hold', 'defend-inside', 'defend-outside', 'brake-early', 'yield'];
 
+// Contact-level log across the whole matrix, so severity statistics are
+// computed over contacts rather than over per-scenario averages.
+const contactLog = [];
+
 /**
  * Place a car rolling at speed in a physically consistent gear, engine RPM, and race state.
  * Repaired per Section 13 item 2.
@@ -154,8 +158,11 @@ function scenario({ delta, gap, behaviour }) {
   let t = 0, overlap = false, noseAhead = false, fullClear = false;
   let firstOverlapT = null, firstClearT = null, retained = true;
   let minClearance = 99, contacts = 0, lightTouches = 0, hardCollisions = 0, offtrack = 0, safetyInterventions = 0, lastImpact = 0;
+  const contactSeverity = { rub: 0, low: 0, moderate: 0, severe: 0 };
   let throttleLifts = 0, lastThrottle = 0, brakeEvents = 0, lastBrake = 0;
   let routeReversals = 0, lastFlankSign = 0;
+  const reversalCause = { preCommit: 0, duringOverlap: 0, postCommit: 0, postCommitRivalMoved: 0, postCommitIndecision: 0, afterClear: 0 };
+  const rivalLateralWindow = [];
   let targetSum = 0, targetN = 0, speedSum = 0, speedN = 0;
   let wakeSum = 0, wakeN = 0;
   let maxTimeLost = 0;
@@ -193,11 +200,21 @@ function scenario({ delta, gap, behaviour }) {
       retained = false;
     }
 
-    // Contact severity (repaired per Section 13 item 8).
+    // Contact severity (repaired per Section 13 item 8). A raw contact count
+    // treats a door-to-door rub and a T-bone as the same event, so contact is
+    // scored on the plant's own axes: src/sim/vehicle.js sets
+    // impact = closing / 12 where `closing` is the approach speed along the
+    // collision normal, and counts a contact as severe when closing > 6 m/s.
+    // Bands follow from that, so a rub is racing and a severe contact is an
+    // accident rather than both being "one contact".
     if (car.impact > 0.02 && lastImpact <= 0.02) {
+      const closing = car.impact * 12;
       contacts++;
       if (car.impact < 0.15) lightTouches++;
       else hardCollisions++;
+      const band = closing > 6 ? 'severe' : closing > 3.5 ? 'moderate' : closing > 1.5 ? 'low' : 'rub';
+      contactSeverity[band]++;
+      contactLog.push({ closing, impact: car.impact, band });
     }
     lastImpact = car.impact;
 
@@ -211,12 +228,33 @@ function scenario({ delta, gap, behaviour }) {
     lastThrottle = th; lastBrake = br;
 
     // Route reversals relative to rival (repaired per Section 13 item 6).
+    // Classified by the state the reversal happened in, because only a
+    // physical side change after the attack has been committed is a real
+    // decision failure: a flank explored before commitment is search, one
+    // given up during overlap is a yield, and one after the pass is clear is
+    // just returning to the racing line.
     const planOffset = driver?.planner?.at(car.s + 20)?.offset ?? 0;
     const flankSign = Math.sign(planOffset - rival.lateral);
-    if (lastFlankSign !== 0 && flankSign !== 0 && flankSign !== lastFlankSign && (driver?.planner?.attack?.active?.committed || overlap)) {
+    const committed = Boolean(driver?.planner?.attack?.active?.committed);
+    if (lastFlankSign !== 0 && flankSign !== 0 && flankSign !== lastFlankSign && (committed || overlap)) {
       routeReversals++;
+      if (fullClear) reversalCause.afterClear++;
+      else if (committed) {
+        reversalCause.postCommit++;
+        // Sub-classify the serious ones: a flank abandoned because the rival
+        // actually moved is a corridor invalidation and is legitimate; one
+        // abandoned while the rival held its line is indecision, and that is
+        // the count we want at zero.
+        const moved = Math.abs(rival.lateral - (rivalLateralWindow[0] ?? rival.lateral)) > 0.4;
+        if (moved) reversalCause.postCommitRivalMoved++;
+        else reversalCause.postCommitIndecision++;
+      }
+      else if (overlap) reversalCause.duringOverlap++;
+      else reversalCause.preCommit++;
     }
     if (flankSign !== 0) lastFlankSign = flankSign;
+    rivalLateralWindow.push(rival.lateral);
+    if (rivalLateralWindow.length > 60) rivalLateralWindow.shift();
 
     // Engagement tax: target-deficit calculation (repaired per Section 13 item 4).
     const ref = freeAir.get(Math.round(car.s));
@@ -246,8 +284,10 @@ function scenario({ delta, gap, behaviour }) {
     timeToOverlap: firstOverlapT, timeToClear: firstClearT,
     minClearance: Number(minClearance.toFixed(2)),
     contacts, lightTouches, hardCollisions, offtrack, safetyInterventions,
+    contactSeverity,
     throttleLifts, brakeEvents,
     routeReversals,
+    reversalCause,
     meanTargetDeficit: Number(meanTargetDeficit.toFixed(2)),
     meanSpeedDeficit: Number(meanSpeedDeficit.toFixed(2)),
     meanWake: Number((wakeSum / Math.max(1, wakeN)).toFixed(3)),
@@ -308,3 +348,31 @@ console.log(`scenarios with overlap: ${sbs.length}`);
 console.log(`  total unnecessary throttle lifts during pursuit: ${rows.reduce((a, r) => a + r.throttleLifts, 0)}`);
 console.log(`  total route reversals after commitment: ${rows.reduce((a, r) => a + r.routeReversals, 0)}`);
 console.log(`  total contacts: ${rows.reduce((a, r) => a + r.contacts, 0)} (${rows.reduce((a, r) => a + r.lightTouches, 0)} rub / ${rows.reduce((a, r) => a + r.hardCollisions, 0)} hard)`);
+
+console.log('\n=== CONTACT SEVERITY (plant axes: impact = closing/12, severe at closing > 6 m/s) ===');
+console.log('band         n   closing m/s   mean   max | impulse proxy mean');
+for (const [key, label] of [['rub', 'rub'], ['low', 'low-energy'], ['moderate', 'moderate'], ['severe', 'severe']]) {
+  const group = contactLog.filter(c => c.band === key);
+  const mean = group.length ? group.reduce((a, c) => a + c.closing, 0) / group.length : 0;
+  const max = group.reduce((a, c) => Math.max(a, c.closing), 0);
+  const impact = group.length ? group.reduce((a, c) => a + c.impact, 0) / group.length : 0;
+  console.log(
+    label.padEnd(12) + String(group.length).padStart(3) +
+    ('  ' + mean.toFixed(2) + ' -> ' + max.toFixed(2)).padStart(18) +
+    impact.toFixed(3).padStart(12),
+  );
+}
+console.log(`total contacts${String(contactLog.length).padStart(4)} | severe ${contactLog.filter(c => c.band === 'severe').length} of ${contactLog.length}`);
+
+console.log('\n=== ROUTE REVERSAL CLASSIFICATION ===');
+console.log('state                              n');
+for (const [key, label] of [['preCommit', 'pre-commit'], ['duringOverlap', 'during overlap'],
+  ['postCommit', 'POST-COMMIT (serious)'], ['afterClear', 'after clear']]) {
+  const n = rows.reduce((a, r) => a + (r.reversalCause?.[key] ?? 0), 0);
+  console.log(label.padEnd(34) + String(n).padStart(3));
+}
+console.log('  of post-commit: rival moved (legitimate)');
+console.log('                ' + String(rows.reduce((a, r) => a + (r.reversalCause?.postCommitRivalMoved ?? 0), 0)).padStart(19));
+console.log('  of post-commit: INDECISION (target ~0)');
+console.log('                ' + String(rows.reduce((a, r) => a + (r.reversalCause?.postCommitIndecision ?? 0), 0)).padStart(19));
+console.log(`total${String(rows.reduce((a, r) => a + r.routeReversals, 0)).padStart(34)}`);
