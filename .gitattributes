@@ -1,0 +1,7 @@
+# Store every file byte-for-byte as it appears in the working tree.
+#
+# The benchmark's vortex-parity smoke asserts that src/sim, src/render and
+# public/assets are SHA-256 identical to the canonical Astra host checkout.
+# Any line-ending normalisation by git turns the LF sources into CRLF on
+# checkout and fails that comparison, so conversion is disabled outright.
+* -text
