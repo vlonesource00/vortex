@@ -56,9 +56,9 @@ export class Vehicle {
     const q = 0.5 * 1.225 * this.u * this.u;
     const ride = 0.066 - this.heave;
     const platform = clamp(1 - Math.abs(this.pitch) * 1.4 - Math.max(0, 0.03 - ride) * 14, 0.55, 1);
-    this.aero.wake = clamp(wake, 0, 0.8);
-    this.aero.downforce = q * SPEC.area * (SPEC.cl + (this.setup.wing - 6) * 0.11) * platform * (1 - wake * 0.32);
-    this.aero.drag = q * SPEC.area * (SPEC.cd + (this.setup.wing - 6) * 0.013) * (1 - wake * 0.24) * (1 + this.damage * 0.2);
+    this.aero.wake = clamp(wake, 0, 0.95);
+    this.aero.downforce = q * SPEC.area * (SPEC.cl + (this.setup.wing - 6) * 0.11) * platform * (1 - wake * 0.16);
+    this.aero.drag = q * SPEC.area * (SPEC.cd + (this.setup.wing - 6) * 0.013) * (1 - wake * 0.42) * (1 + this.damage * 0.2);
     const longitudinalTransfer = clamp(this.ax, -22, 18) * mass * SPEC.cg / SPEC.wheelbase;
     const lateralTransfer = clamp(this.ay, -25, 25) * mass * SPEC.cg / SPEC.track;
     const frontLoad = mass * 9.81 * SPEC.frontWeight - longitudinalTransfer + this.aero.downforce * SPEC.frontAero;
@@ -140,7 +140,13 @@ export function wakes(cars) {
       const dx = car.x - other.x, dz = car.z - other.z;
       const behind = -(dx * Math.sin(other.yaw) + dz * Math.cos(other.yaw));
       const lateral = Math.abs(dx * Math.cos(other.yaw) - dz * Math.sin(other.yaw));
-      if (behind > 2 && behind < 75) wake = Math.max(wake, Math.exp(-behind / 40) * clamp(1 - lateral / (1.4 + behind * 0.035), 0, 1));
+      if (behind > 1.5 && behind < 110) {
+        const coneWidth = 2.4 + behind * 0.050;
+        if (lateral < coneWidth) {
+          const latTaper = 1 - (lateral / coneWidth) ** 2;
+          wake = Math.max(wake, Math.exp(-behind / 55) * latTaper);
+        }
+      }
     }
     return wake;
   });
