@@ -24,6 +24,7 @@
  * time, because OpportunityField's trajectory term is `time * 13`).
  */
 import { restrictsSpeed, INTERACTION_MARGIN } from './clearance.js';
+import { wrap } from '../../../sim/math.js';
 
 /** Solved needed on one flank before commitment is granted (~185 ms at 27 Hz). */
 export const COMMITMENT_PERSISTENCE = 5;
@@ -62,8 +63,10 @@ export class AttackContract {
    * @param {object} ego
    * @param {Array}  graph      engagement edges
    * @param {Array}  candidates all scored candidates this solve
+   * @param {Array}  opponents  visible opponents
+   * @param {object} track      track model
    */
-  update(best, ego, graph, candidates = []) {
+  update(best, ego, graph = [], candidates = [], opponents = [], track = null) {
     const target = best?.targetId ?? null;
     // The generator already assigns an explicit flank to every rival-attack
     // candidate. Deriving it from sign(targetLateral - ego.lateral) is wrong:
@@ -72,9 +75,25 @@ export class AttackContract {
     // exactly the contract/plan mismatch this block must close.
     const flankOf = (c) => c?.flank || Math.sign((c?.targetLateral ?? 0) - ego.lateral || 1);
 
-    if (!target) {
+    let targetDs = Infinity;
+    if (target !== null && track && opponents?.length) {
+      const rival = opponents.find(item => item.id === target);
+      if (rival) {
+        targetDs = wrap(rival.s - ego.s + track.length / 2, track.length) - track.length / 2;
+      }
+    }
+
+    // Section 11 & Grid-start:
+    // If target is physically cleared (ds < -5.1m) or nonexistent, handle completion
+    if (!target || targetDs < -5.1) {
       if (this.active && ++this.active.clear > 4) { this.active = null; this.state = 'SEARCH'; }
       else if (this.active) this.state = 'CLEARING';
+      this.streak = 0;
+      return this.active;
+    }
+
+    // Never initiate a new attack against a car that is already behind ego
+    if ((!this.active || this.active.opponentId !== target) && targetDs < -2.0) {
       this.streak = 0;
       return this.active;
     }

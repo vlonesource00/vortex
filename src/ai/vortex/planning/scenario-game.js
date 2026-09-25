@@ -7,6 +7,7 @@ export class ScenarioGame {
       this.ownership.constrain(candidate, opponents);
       let score = this.opportunity.score(candidate, ego, opponents, occupancy, owners);
       if (candidate.committed) score -= 2.2;
+      if (candidate.isOwnedCorridor) score -= 3.5;
       if (candidate.targetId !== null) {
         const edge = graph.find(item => item.a === ego.id && item.b === candidate.targetId || item.b === ego.id && item.a === candidate.targetId);
         if (edge?.overlap && candidate.flank !== this.ownership.owners.get(candidate.targetId)?.flank) score += 5;

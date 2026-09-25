@@ -8,8 +8,9 @@ export class OccupancyPredictor {
     const distance = (opponent.longitudinalSpeed ?? opponent.speed) * t + .5 * acceleration * t * t;
     const beliefs = opponent.hypotheses ?? { hold: 1 };
     const coverDirection = Math.sign(opponent.lateralSpeed || opponent.lateral || 1);
+    const latDrift = clamp((opponent.lateralSpeed ?? 0) * 0.35, -0.6, 0.6);
     return {
-      s: wrap(opponent.s + distance, this.track.length), lateral: clamp(opponent.lateral + (opponent.lateralSpeed ?? 0) * Math.min(t, .7), -10, 10),
+      s: wrap(opponent.s + distance, this.track.length), lateral: clamp(opponent.lateral + latDrift * Math.min(t, 1.0), -10, 10),
       speed, halfLength: opponent.spec.halfLength, halfWidth: opponent.spec.halfWidth,
       branches: [
         { weight: beliefs.hold ?? 1, s: wrap(opponent.s + distance, this.track.length), lateral: opponent.lateral },

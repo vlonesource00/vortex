@@ -103,11 +103,34 @@ export class OpportunityField {
         const edgePinch = edgeRoom < ego.spec.halfWidth + 0.55
           ? 1 + (ego.spec.halfWidth + 0.55 - edgeRoom) * 1.6 : 1;
 
-        // §16 physics, not a global weight reduction. High-energy collision
-        // remains extremely expensive; parallel close racing is acceptable.
-        const overlapCost = overlap > 0 ? 190 + overlap * 260 : 0;
-        const crossingCost = crossing ** 2 * Math.min(150, relSpeed ** 2 * 0.85);
-        const parallelCost = proximity * (2.5 + relLong * 0.35);
+        // §16 physics & Section 5 swept-body conflict:
+        // High-energy collision and swept-body overlap are disqualified; parallel close racing inside
+        // the legal corridor is accepted.
+        let sweptConflict = false;
+        if (prior && time < 2.5) {
+          const minLat = Math.min(prior.offset, p.offset) - ego.spec.halfWidth;
+          const maxLat = Math.max(prior.offset, p.offset) + ego.spec.halfWidth;
+          const rivalMinLat = predicted.lateral - predicted.halfWidth;
+          const rivalMaxLat = predicted.lateral + predicted.halfWidth;
+          const latIntersect = Math.max(0, Math.min(maxLat, rivalMaxLat) - Math.max(minLat, rivalMinLat));
+
+          const sA = Math.min(prior.s, p.s) - ego.spec.halfLength;
+          const sB = Math.max(prior.s, p.s) + ego.spec.halfLength;
+          const rA = predicted.s - predicted.halfLength;
+          const rB = predicted.s + predicted.halfLength;
+          const longIntersect = Math.max(0, Math.min(sB, rB) - Math.max(sA, rA));
+
+          if (latIntersect > 0 && longIntersect > 0 && Math.abs(p.offset - prior.offset) > 1.2) {
+            sweptConflict = true;
+          }
+        }
+
+        const hasCollisionOverlap = (overlap > 0 || sweptConflict) && time < 2.5;
+        if (hasCollisionOverlap) path.hasCollision = true;
+        const overlapCost = hasCollisionOverlap ? 1200 + (overlap + (sweptConflict ? 0.8 : 0)) * 500 : (overlap > 0 ? 190 + overlap * 260 : 0);
+        const crossingCost = crossing ** 2 * Math.min(250, relSpeed ** 2 * 1.2);
+        // Parallel racing: if separated by >= 0.28m, parallelCost is zero!
+        const parallelCost = latGap >= 0.28 ? 0 : proximity * (2.5 + relLong * 0.35);
         const cContact = (overlapCost * edgePinch + proximity * crossingCost * edgePinch + parallelCost);
         contact += cContact;
         cost += cContact;
@@ -122,8 +145,23 @@ export class OpportunityField {
         }
       }
       for (const owner of ownership) {
-        if (Math.abs(p.offset - owner.lateral) < 1.25) { ownershipCost += 20; cost += 20; }
+        if (owner.flank < 0 && p.offset > owner.qMax + 0.2) {
+          ownershipCost += 80;
+          cost += 80;
+          path.violatesOwnership = true;
+        } else if (owner.flank > 0 && p.offset < owner.qMin - 0.2) {
+          ownershipCost += 80;
+          cost += 80;
+          path.violatesOwnership = true;
+        }
       }
+    }
+
+    if (path.violatesOwnership) {
+      cost += 800;
+    }
+    if (path.isOwnedCorridor && !path.hasCollision && !path.violatesOwnership) {
+      cost -= 3.5;
     }
 
     const progressReward = distance / Math.max(.1, time);

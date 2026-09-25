@@ -71,6 +71,7 @@ export class VortexDriver {
     ego.tx = projection.tx; ego.tz = projection.tz; ego.nx = projection.nx; ego.nz = projection.nz;
     ego.curvature = projection.curvature;
     this.totalTime += dt; this.stepCount++;
+    this.currentWake = ego.aero?.wake ?? 0;
     this.worldClock += dt; this.envelopeClock += dt;
     while (this.envelopeClock >= 1 / WORLD_HZ) {
       const h = this.envelopeClock >= 1 / WORLD_HZ ? 1 / WORLD_HZ : this.envelopeClock;
@@ -170,7 +171,7 @@ export class VortexDriver {
     this.finishStep(controls, observation, engaged, false);
     return controls;
   }
-  /** Plan speed at a station: the free-air profile, reduced by any plan limit. */
+  /** Plan speed at a station: the free-air profile, reduced by any plan limit, plus tow boost when in slipstream. */
   planSpeed(station) {
     let speed = this.atlas.profileSpeed(station);
     const plan = this.planner.plan;
@@ -179,6 +180,16 @@ export class VortexDriver {
       if (travelled <= plan.points.at(-1).distance) {
         const limited = this.planner.at(station).speedLimit;
         if (Number.isFinite(limited)) speed = Math.min(speed, limited);
+      }
+    }
+    // §17 Tow-aware opportunity speed:
+    // If in the wake of a leader, lower aero drag permits higher velocity on straights / mild curves.
+    const wake = this.currentWake ?? 0;
+    if (wake > 0.05 && speed > 35) {
+      const curv = Math.abs(this.planner?.at(station)?.curvature ?? 0);
+      if (curv < 0.008) {
+        const towBoost = 1 + 0.10 * Math.min(1.0, wake);
+        speed *= towBoost;
       }
     }
     return speed;
@@ -198,7 +209,7 @@ export class VortexDriver {
     // whole braking distance and makes the car slow down far too early: at the
     // Dock Hairpin that alone cost 4.7 m/s of mid-corner speed.
     const offset = this.planner.at(station).offset;
-    return this.envelope.at(ego, speed, 0, offset).brake;
+    return this.envelope.at(ego, speed, 0, offset).brake * 0.82;
   }
 
   /**
@@ -245,7 +256,18 @@ export class VortexDriver {
     const feedForward = clamp((forward * forward - here * here) / (2 * ds), -22, 22);
     this.speedIntegral = clamp(this.speedIntegral + error * dt * 16, -4, 4);
     if (error * this.speedIntegral < 0) this.speedIntegral *= 0.88;
-    return clamp(error, -40, 40) * (error > 0 ? 3.6 : 6.5) + feedForward + this.speedIntegral;
+
+    let demand = clamp(error, -40, 40) * (error > 0 ? 3.6 : 6.5) + feedForward + this.speedIntegral;
+
+    // §22 Side-by-side & Committed Attack Throttle Preservation:
+    // In active overlap or committed attack inside owned corridor, do not withhold throttle
+    // unless braking is physically required for an upcoming corner (error < -1.5).
+    const isCombatPush = Boolean(this.ownership?.egoCorridor?.active || this.planner?.attack?.active?.committed);
+    if (isCombatPush && error > -1.2 && demand > -0.5) {
+      demand = Math.max(demand, 4.2);
+    }
+
+    return demand;
   }
 
   /**
