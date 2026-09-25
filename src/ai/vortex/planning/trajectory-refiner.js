@@ -75,7 +75,11 @@ export class TrajectoryRefiner {
         const lateralGap = Math.abs(predicted.lateral - p.offset);
         if (ds > -1 && ds < ego.spec.halfLength + predicted.halfLength + 8
           && lateralGap < ego.spec.halfWidth + predicted.halfWidth + 0.44) {
-          const capped = Math.max(0, predicted.speed + Math.max(-2, ds - 4) * 0.32);
+          // Match the rival's pace, do not trail below it. The old cap forced
+          // the car to predicted.speed - 1.28 when alongside, which is exactly
+          // the reported "slows down a ton for the car in front": being level
+          // with a slower car is not a reason to also be slower than it.
+          const capped = Math.max(0, predicted.speed + Math.max(0, (ds - 4) * 0.32));
           p.speedLimit = Math.min(p.speedLimit, capped);
           interaction = true;
         }
