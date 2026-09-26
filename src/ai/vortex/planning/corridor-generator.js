@@ -1,5 +1,6 @@
 import { clamp, wrap } from '../../../sim/math.js';
 import { ATTACK_CORRIDOR_MARGIN } from '../interaction/clearance.js';
+import { GripRobustness } from './grip-robustness.js';
 
 const smooth = t => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
 
@@ -9,6 +10,9 @@ export class CorridorGenerator {
     this.track = atlas.track;
     this.maxDistance = maxDistance;
     this.step = step;
+    // Free-air line geometry, selected on live grip. Combat corridors are
+    // built from the nominal line and are unaffected by this.
+    this.robustness = new GripRobustness(atlas, atlas.track);
   }
 
   generate(ego, opponents, contract = null, corridorOwnership = null) {
@@ -136,7 +140,11 @@ export class CorridorGenerator {
         const isQ0 = profile.id === 'Q0' && !profile.isOwnedCorridor;
 
         if (isQ0) {
-          const p = atlas.sample(s, 0);
+          // The free-air line is the oracle geometry, opened out through
+          // whatever the tightest upcoming curvature event is when the live
+          // tyre cannot hold the nominal margin. Pure geometry: the speed
+          // profile is untouched, so any improvement is the line's own.
+          const p = atlas.sample(s, this.robustness.shift(s));
           points.push({
             ...p,
             distance,

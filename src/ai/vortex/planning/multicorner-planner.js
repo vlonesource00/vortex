@@ -38,6 +38,14 @@ export class MulticornerPlanner {
     // Update ownership first so generator has current owned corridor
     this.ownership.update(ego, relevant);
 
+    // Free-air line geometry: latch onto the most demanding upcoming event and
+    // choose which of the discrete geometries the live tyre can afford. This
+    // runs before candidate generation so the free-air candidate is already the
+    // right shape; combat corridors are built from the nominal line and are
+    // not touched.
+    this.generator.robustness.survey(ego.s);
+    this.generator.robustness.select(this.envelope?.planGrip ?? 1);
+
     const candidates = this.generator.generate(ego, relevant, this.attack.active, this.ownership);
     for (const candidate of candidates) {
       this.refiner.refine(candidate, ego, occupancy, opponents);
