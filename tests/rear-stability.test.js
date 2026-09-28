@@ -70,10 +70,10 @@ test('rear cap is reported through allocate and leaves controls alone when inert
   assert.ok(r.throttle > 0 && r.throttle <= 1);
 });
 
-test('VORTEX_REAR_STABILITY is opt-in and does not fire by default', () => {
+test('rear cap engages by default and reports it', () => {
   const alloc = new ActuatorAllocator({ mode: 'physical' });
   const spec = { radius: 0.33, steeringLock: 0.55, wheelbase: 2.9, halfWidth: 0.99 };
-  // Rear heavily laterally loaded - would be capped if the flag were on.
+  // Rear heavily laterally loaded - the promoted law must intervene here.
   const ego = {
     speed: 40, spec,
     wheels: [
@@ -85,5 +85,6 @@ test('VORTEX_REAR_STABILITY is opt-in and does not fire by default', () => {
   };
   const envelope = { lateral: 25, brake: 20, drive: 8, drag: 0.5, driveTorque: 3000 };
   const r = alloc.allocate(3, ego, envelope, 0.01);
-  assert.equal(r.capActive, false, 'flag off means the cap never engages');
+  assert.equal(r.capActive, true, 'the promoted law is active by default');
+  assert.ok(r.capReduce > 0, 'it must actually reduce the throttle ask');
 });

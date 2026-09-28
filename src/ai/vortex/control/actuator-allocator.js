@@ -2,11 +2,11 @@ import { clamp } from '../../../sim/math.js';
 import { TyrePredictor } from './tyre-predictor.js';
 
 /**
- * Rear-axle friction-ellipse throttle cap. Off by default so the effect can be
- * A/B measured against production before it is allowed anywhere near a
- * promotion decision.
+ * Rear-axle friction-ellipse throttle cap. On by default: this is the promoted
+ * control law, not an experiment. Set VORTEX_REAR_STABILITY=0 to disable it for
+ * A/B measurement.
  */
-const REAR_STABILITY = typeof process !== 'undefined' && Boolean(process.env?.VORTEX_REAR_STABILITY);
+const REAR_STABILITY = typeof process === 'undefined' || process.env?.VORTEX_REAR_STABILITY !== '0';
 
 /**
  * Turns a required net longitudinal acceleration into throttle and brake.
