@@ -28,6 +28,59 @@ export class VehicleEnvelope {
     this.samples = 0;
     this.confidence = 0;
     this.lastReason = 'initialising';
+    // ---- axle-level stability state (observability only) ----
+    // muScale is the mean of all four tyres, so an axle that is running out of
+    // capability while the other is fine is invisible in it. These separate
+    // the two axles so the rear limit can be seen before the car is lost.
+    this.frontGripScale = 1;
+    this.rearGripScale = 1;
+    this.rearToFrontGrip = 1;
+    this.frontReserve = 1;
+    this.rearReserve = 1;
+    this.frontUtilisation = 0;
+    this.rearUtilisation = 0;
+    this.yawGenerationReserve = 1;
+    this.yawSettlementReserve = 1;
+  }
+
+  /**
+   * Per-axle capability from the plant's own tyre law.
+   *
+   * `tyre.utilisation` is exactly hypot(fx, fy) / peak inside tyreForce, so
+   * the live peak force is recoverable as used / utilisation and no capacity
+   * threshold has to be invented here.
+   */
+  updateAxles(wheels) {
+    const axle = (a, b) => {
+      const ws = [wheels[a], wheels[b]];
+      let grip = 0, peak = 0, used = 0;
+      for (const w of ws) {
+        if (!w?.tyre) continue;
+        grip += tyreGrip(w.tyre, Math.max(1500, w.load || 3300));
+        const u = w.tyre.utilisation ?? 0;
+        const f = Math.hypot(w.tyre.fx ?? 0, w.tyre.fy ?? 0);
+        used += f;
+        peak += u > 1e-6 ? f / u : 0;
+      }
+      return {
+        gripScale: grip / 2,
+        peak, used,
+        reserve: peak > 0 ? clamp((peak - used) / peak, 0, 1) : 1,
+        utilisation: peak > 0 ? clamp(used / peak, 0, 1) : 0,
+      };
+    };
+    const f = axle(0, 1), r = axle(2, 3);
+    this.frontGripScale = f.gripScale;
+    this.rearGripScale = r.gripScale;
+    this.rearToFrontGrip = clamp(r.gripScale / Math.max(0.2, f.gripScale), 0.4, 1.4);
+    this.frontReserve = f.reserve;
+    this.rearReserve = r.reserve;
+    this.frontUtilisation = f.utilisation;
+    this.rearUtilisation = r.utilisation;
+    // Front lateral reserve is what rotates the car; rear lateral reserve is
+    // what settles it. Read against the same live capability, not a constant.
+    this.yawGenerationReserve = f.reserve * this.rearToFrontGrip;
+    this.yawSettlementReserve = r.reserve;
   }
 
   /** Bounded identification from the car's own measured response. */
@@ -42,6 +95,7 @@ export class VehicleEnvelope {
       // degradation rather than the small constant bias of the identification.
       if (this.muReference === null) this.muReference = ratio;
       this.muScale = damp(this.muScale, ratio, 0.35, dt);
+      this.updateAxles(wheels);
     }
 
     const settled = Math.abs(ego.ay) < 2.2 && Math.abs(ego.lateral) < 6 && ego.impact < 0.01 && ego.zone === 'asphalt';
@@ -113,6 +167,13 @@ export class VehicleEnvelope {
       reserve: model.reserve(utilisation),
       speedLimit: Math.min(82, model.cornerSpeedAt(curvature)),
       throttleLimit: off ? 0.35 : model.reserve(utilisation),
+      // Axle-level stability state. Diagnostics: nothing downstream is
+      // required to read them, and they are not wired into any control law.
+      frontReserve: this.frontReserve,
+      rearReserve: this.rearReserve,
+      rearToFrontGrip: this.rearToFrontGrip,
+      yawGenerationReserve: this.yawGenerationReserve,
+      yawSettlementReserve: this.yawSettlementReserve,
     };
   }
 
@@ -123,6 +184,15 @@ export class VehicleEnvelope {
       driveScale: this.driveScale,
       confidence: this.confidence,
       source: this.lastReason,
+      frontGripScale: this.frontGripScale,
+      rearGripScale: this.rearGripScale,
+      rearToFrontGrip: this.rearToFrontGrip,
+      frontReserve: this.frontReserve,
+      rearReserve: this.rearReserve,
+      frontUtilisation: this.frontUtilisation,
+      rearUtilisation: this.rearUtilisation,
+      yawGenerationReserve: this.yawGenerationReserve,
+      yawSettlementReserve: this.yawSettlementReserve,
     };
   }
 
@@ -131,6 +201,10 @@ export class VehicleEnvelope {
     this.muReference = null;
     this.planGrip = 1;
     this.samples = 0; this.confidence = 0; this.lastReason = 'initialising';
+    this.frontGripScale = 1; this.rearGripScale = 1; this.rearToFrontGrip = 1;
+    this.frontReserve = 1; this.rearReserve = 1;
+    this.frontUtilisation = 0; this.rearUtilisation = 0;
+    this.yawGenerationReserve = 1; this.yawSettlementReserve = 1;
     this.model.setMuScale(1);
   }
 }

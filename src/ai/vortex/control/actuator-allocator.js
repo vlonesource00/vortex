@@ -2,6 +2,13 @@ import { clamp } from '../../../sim/math.js';
 import { TyrePredictor } from './tyre-predictor.js';
 
 /**
+ * Rear-axle friction-ellipse throttle cap. Off by default so the effect can be
+ * A/B measured against production before it is allowed anywhere near a
+ * promotion decision.
+ */
+const REAR_STABILITY = typeof process !== 'undefined' && Boolean(process.env?.VORTEX_REAR_STABILITY);
+
+/**
  * Turns a required net longitudinal acceleration into throttle and brake.
  *
  * The demand is a physical quantity in m/s^2 derived from the station speed
@@ -82,6 +89,9 @@ export class ActuatorAllocator {
     // one behaviour, not two, so no state-dependent weighting separates them.
     // See tools/ab-allocator.mjs and tools/sweep-thermal.mjs for the front.
     this.mode = options.mode ?? 'physical';
+    // Observability for the rear-axle cap: where it fires and what it costs.
+    this.capStats = { ticks: 0, activeTicks: 0, activeTime: 0, sumScale: 0, sumReduce: 0,
+      maxReduce: 0, rearFxAuthority: 0, stations: {} };
     this.forcedThrottle = options.forcedThrottle ?? null;
     this.log = options.log ?? null;
   }
@@ -167,13 +177,72 @@ export class ActuatorAllocator {
 
     let throttle = tPhys;
     let decision = null;
+    const wheels = ego.wheels;
+
+    // ---- rear-axle stability cap (lever 1: longitudinal force theft) ----
+    // `lateralDemand` above is computed from the envelope's lateral capacity,
+    // which is derived from the mean of all four tyres. When the driven axle is
+    // tighter than that mean - which is exactly the state the reproduced spin
+    // entered in - the difference is longitudinal force being paid for out of
+    // rear lateral capability the car does not have. The friction ellipse in
+    // force space is sqrt(fx^2+fy^2) <= peak, so the only throttle the rear can
+    // physically support is the one that keeps it inside that ellipse. No
+    // threshold is introduced: where the rear is not the limiter this is inert,
+    // and it scales with the capability the tyres actually have right now.
+    if (REAR_STABILITY && demand > 0 && wheels && wheels.length >= 4) {
+      // Compare lateral to lateral. tyre.utilisation is combined-slip
+      // (hypot(fx,fy)/peak), so using it directly against a lateral-only
+      // demand double-counts the longitudinal force and makes the cap fire
+      // whenever there is any throttle at all.
+      let rearLatUse = 0, rearFxAuthority = 0;
+      for (const w of [wheels[2], wheels[3]]) {
+        const t = w?.tyre;
+        if (!t) continue;
+        const used = Math.hypot(t.fx ?? 0, t.fy ?? 0);
+        const peak = (t.utilisation ?? 0) > 1e-6 ? used / t.utilisation : 0;
+        if (peak > 0) {
+          rearLatUse = Math.max(rearLatUse, Math.abs(t.fy ?? 0) / peak);
+          // Per-wheel force-space limit: how much longitudinal force the tyre
+          // can still add without stealing the lateral force holding it.
+          rearFxAuthority += Math.sqrt(Math.max(0, peak * peak - (t.fy ?? 0) ** 2));
+        }
+      }
+      this.capStats.ticks++;
+      this.capStats.rearFxAuthority = rearFxAuthority;
+      this.capStats.lastCapActive = false;
+      this.capStats.lastCapReduce = 0;
+      // Measured and rejected: clamping throttle to
+      //   rearFxAuthority / fullThrottleForce
+      // is the more elegant force-space statement, but it is too permissive
+      // here - driveTorque/radius overstates the force the axle can actually
+      // put down, and the reproduced collapse returned (L4 107.9 -> 92.5 s
+      // instead of 78.9, minV 0.1, car nearly stopped again). The reserve-ratio
+      // form below is what measurably holds the car, so it is the control law;
+      // rearFxAuthority stays as a reported diagnostic.
+      if (rearLatUse > lateralDemand) {
+        const rearReserve = Math.sqrt(Math.max(0, 1 - rearLatUse * rearLatUse));
+        const scale = clamp(rearReserve / Math.max(1e-3, reserve), 0, 1);
+        const before = throttle;
+        throttle = Math.min(throttle, throttle * scale);
+        const reduce = before - throttle;
+        this.capStats.activeTicks++;
+        this.capStats.activeTime += 1 / 120;
+        this.capStats.sumScale += scale;
+        this.capStats.maxReduce = Math.max(this.capStats.maxReduce, reduce);
+        this.capStats.sumReduce += reduce;
+        this.capStats.stations[Math.round(ego.s)] = (this.capStats.stations[Math.round(ego.s)] ?? 0) + 1;
+        this.capStats.lastCapActive = true;
+        this.capStats.lastCapReduce = reduce;
+        decision = { reason: 'rear-axle-friction-ellipse', rearLatUse, lateralDemand, scale,
+          rearFxAuthority, before, after: throttle };
+      }
+    }
 
     if (this.mode === 'cheap') throttle = tCheap;
 
     // Only worth predicting where the two maps disagree enough to matter. On a
     // straight the denominators coincide and the physical map is exact.
     const gap = tCheap - tPhys;
-    const wheels = ego.wheels;
     if (this.mode === 'predictive' && demand > 0 && gap >= this.minGap && wheels && wheels.length >= 4) {
       const set = this.candidates(tPhys, tCheap);
       const baseline = this.predictor.predict(ego, envelope, tPhys);
@@ -240,6 +309,8 @@ export class ActuatorAllocator {
     return {
       throttle, brake, acceleration: accel, lateralDemand, reserve, drive, braking,
       throttlePhysical: tPhys, throttleFullAsk: tCheap, decision,
+      capActive: (this.capActive = this.capStats.lastCapActive === true),
+      capReduce: (this.capReduce = this.capStats.lastCapReduce ?? 0),
     };
   }
 
